@@ -11,6 +11,14 @@
     clippy::unreadable_literal
 )]
 
+use ark_ff::fields::PrimeField;
+use ark_crypto_primitives::{crh::poseidon::CRH, sponge::poseidon::{find_poseidon_ark_and_mds, PoseidonConfig}};
+use ark_crypto_primitives::crh::CRHScheme;
+use ark_ed25519::{FrConfig, EdwardsAffine, EdwardsConfig, Fr};
+use ark_std::vec;
+use ark_std::vec::Vec;
+use ark_serialize::{CanonicalSerialize, Compress};
+
 #[inline(always)]
 fn load_be(base: &[u8], offset: usize) -> u32 {
     let addr = &base[offset..];
@@ -211,45 +219,53 @@ impl State {
     }
 }
 
-#[derive(Copy, Clone)]
+// #[derive(Copy, Clone)]
+#[derive(Clone)]
 pub struct Hash {
-    state: State,
-    w: [u8; 64],
-    r: usize,
-    len: usize,
+    params: PoseidonConfig<Fr>, // Parameters for the Poseidon hash
+    buffer: Vec<Fr>,                // Buffer to store absorbed field elements
 }
 
 impl Hash {
+
     pub fn new() -> Hash {
+        let (ark, mds) = find_poseidon_ark_and_mds::<Fr> (255, 2, 8, 24, 0);        // ark_bn254::FrParameters::MODULUS_BITS = 255
+        let poseidon_params = PoseidonConfig::<Fr>::new(8, 24, 31, mds, ark, 2, 1);
         Hash {
-            state: State::new(),
-            r: 0,
-            w: [0u8; 64],
-            len: 0,
+            params: poseidon_params,
+            buffer: vec![],
         }
     }
 
     fn _update(&mut self, input: impl AsRef<[u8]>) {
+        // Convert input bytes to field elements and add to the buffer
         let input = input.as_ref();
-        let mut n = input.len();
-        self.len += n;
-        let av = 64 - self.r;
-        let tc = ::core::cmp::min(n, av);
-        self.w[self.r..self.r + tc].copy_from_slice(&input[0..tc]);
-        self.r += tc;
-        n -= tc;
-        let pos = tc;
-        if self.r == 64 {
-            self.state.blocks(&self.w);
-            self.r = 0;
-        }
-        if self.r == 0 && n > 0 {
-            let rb = self.state.blocks(&input[pos..]);
-            if rb > 0 {
-                self.w[..rb].copy_from_slice(&input[pos + n - rb..]);
-                self.r = rb;
-            }
-        }
+        let mut field_elements: Vec<Fr> = input
+            .chunks(32) // Split the input into chunks of the field size
+            .map(Fr::from_be_bytes_mod_order) // Convert each chunk into a field element
+            .collect();
+        self.buffer.append(&mut field_elements); // Add field elements to the buffer
+    
+        // let input = input.as_ref();
+        // let mut n = input.len();
+        // self.len += n;
+        // let av = 64 - self.r;
+        // let tc = ::core::cmp::min(n, av);
+        // self.w[self.r..self.r + tc].copy_from_slice(&input[0..tc]);
+        // self.r += tc;
+        // n -= tc;
+        // let pos = tc;
+        // if self.r == 64 {
+        //     self.state.blocks(&self.w);
+        //     self.r = 0;
+        // }
+        // if self.r == 0 && n > 0 {
+        //     let rb = self.state.blocks(&input[pos..]);
+        //     if rb > 0 {
+        //         self.w[..rb].copy_from_slice(&input[pos + n - rb..]);
+        //         self.r = rb;
+        //     }
+        // }
     }
 
     /// Absorb content
@@ -258,22 +274,30 @@ impl Hash {
     }
 
     /// Compute SHA256(absorbed content)
-    pub fn finalize(mut self) -> [u8; 32] {
-        let mut padded = [0u8; 128];
-        padded[..self.r].copy_from_slice(&self.w[..self.r]);
-        padded[self.r] = 0x80;
-        let r = if self.r < 56 { 64 } else { 128 };
-        let bits = self.len * 8;
-        for i in 0..8 {
-            padded[r - 8 + i] = (bits as u64 >> (56 - i * 8)) as u8;
-        }
-        self.state.blocks(&padded[..r]);
-        let mut out = [0u8; 32];
-        self.state.store(&mut out);
-        out
+    pub fn finalize(self) -> [u8; 32] {
+        // let mut padded = [0u8; 128];
+        // padded[..self.r].copy_from_slice(&self.w[..self.r]);
+        // padded[self.r] = 0x80;
+        // let r = if self.r < 56 { 64 } else { 128 };
+        // let bits = self.len * 8;
+        // for i in 0..8 {
+        //     padded[r - 8 + i] = (bits as u64 >> (56 - i * 8)) as u8;
+        // }
+        // self.state.blocks(&padded[..r]);
+        // let mut out = [0u8; 32];
+        // self.state.store(&mut out);
+        // out
+        let hash_result = CRH::<Fr>::evaluate(&self.params, self.buffer).unwrap();
+        let mut writer = vec![];
+        hash_result.serialize_with_mode(&mut writer, Compress::Yes); // Convert the result to bytes
+        let mut output = [0u8; 32];
+        // let bytes = &writer[..32.min(writer.len())]; // Take the first 32 bytes or less
+        output[..32].copy_from_slice(&writer);
+
+        output
     }
 
-    /// Compute SHA256(`input`)
+    /// Compute Poseidon(`input`)
     pub fn hash(input: &[u8]) -> [u8; 32] {
         let mut h = Hash::new();
         h.update(input);
@@ -294,7 +318,7 @@ pub struct HMAC {
 }
 
 impl HMAC {
-    /// Compute HMAC-SHA256(`input`, `k`)
+    /// Compute HMAC-Poseidon(`input`, `k`)
     pub fn mac(input: impl AsRef<[u8]>, k: impl AsRef<[u8]>) -> [u8; 32] {
         let input = input.as_ref();
         let k = k.as_ref();
@@ -345,7 +369,7 @@ impl HMAC {
         self.ih.update(input);
     }
 
-    /// Compute HMAC-SHA256 over the entire input
+    /// Compute HMAC-Poseidon over the entire input
     pub fn finalize(mut self) -> [u8; 32] {
         for p in self.padded.iter_mut() {
             *p ^= 0x6a;
