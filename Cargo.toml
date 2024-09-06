@@ -18,6 +18,8 @@ ark-ed25519 = { version = "0.4.0", default-features = false, features = ["r1cs"]
 ark-std = { version = "0.4.0", default-features = true }
 ark-serialize = { version = "0.4.0", default-features = true }
 ark-ff = { version = "0.4.0", default-features = true }
+ark-r1cs-std = { version = "0.4.0", default-features = true }
+ark-relations = { version = "0.4.0", default-features = true }
 [features]
 default = []
 opt_size = []
