@@ -32,7 +32,7 @@ pub struct Hash {
 
 impl Hash {
     pub fn new() -> Hash {
-        let (ark, mds) = find_poseidon_ark_and_mds::<Fr> (253, 2, 8, 24, 0);        // ark_bn254::FrParameters::MODULUS_BITS = 255
+        let (ark, mds) = find_poseidon_ark_and_mds::<Fr> (254, 2, 8, 24, 0);        // ark_bn254::FrParameters::MODULUS_BITS = 255
         let poseidon_params = PoseidonConfig::<Fr>::new(8, 24, 31, mds, ark, 2, 1);
         Hash {
             params: poseidon_params,
