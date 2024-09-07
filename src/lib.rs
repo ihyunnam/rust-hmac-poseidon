@@ -15,7 +15,7 @@ use ark_crypto_primitives::crh::poseidon::{CRH, constraints::CRHGadget};
 use ark_r1cs_std::alloc::AllocVar;
 use ark_r1cs_std::fields::fp::FpVar;
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
-use ark_std::{vec::Vec, marker::PhantomData};
+use ark_std::{marker::PhantomData, println, vec::Vec};
 use ark_ff::fields::PrimeField;
 use ark_crypto_primitives::{sponge::poseidon::{find_poseidon_ark_and_mds, PoseidonConfig}};
 use ark_crypto_primitives::crh::CRHScheme;
@@ -32,7 +32,9 @@ pub struct Hash {
 
 impl Hash {
     pub fn new() -> Hash {
-        let (ark, mds) = find_poseidon_ark_and_mds::<Fr> (254, 2, 8, 24, 0);        // ark_bn254::FrParameters::MODULUS_BITS = 255
+        println!("inside new");
+        let (ark, mds) = find_poseidon_ark_and_mds::<Fr> (253, 2, 8, 24, 0);        // ark_bn254::FrParameters::MODULUS_BITS = 255
+        println!("after ark, mds");
         let poseidon_params = PoseidonConfig::<Fr>::new(8, 24, 31, mds, ark, 2, 1);
         Hash {
             params: poseidon_params,
@@ -42,13 +44,14 @@ impl Hash {
 
     fn _update(&mut self, input: impl AsRef<[u8]>) {
         // Convert input bytes to field elements and add to the buffer
+        println!("inside update");
         let input = input.as_ref();
         let mut field_elements: Vec<Fr> = input
             .chunks(32) // Split the input into chunks of the field size
             .map(Fr::from_be_bytes_mod_order) // Convert each chunk into a field element
             .collect();
         self.buffer.append(&mut field_elements); // Add field elements to the buffer
-    
+        println!("end of update");
         // let input = input.as_ref();
         // let mut n = input.len();
         // self.len += n;
@@ -90,13 +93,14 @@ impl Hash {
         // let mut out = [0u8; 32];
         // self.state.store(&mut out);
         // out
+        println!("inside finalize");
         let hash_result = CRH::<Fr>::evaluate(&self.params, self.buffer).unwrap();
         let mut writer = vec![];
         hash_result.serialize_with_mode(&mut writer, Compress::Yes); // Convert the result to bytes
         let mut output = [0u8; 32];
         // let bytes = &writer[..32.min(writer.len())]; // Take the first 32 bytes or less
         output[..32].copy_from_slice(&writer);
-
+        println!("end of finalize");
         output
     }
 
@@ -127,7 +131,9 @@ impl HMAC {
         let k = k.as_ref();
         let mut hk = [0u8; 32];
         let k2 = if k.len() > 64 {
+            println!("before copy");
             hk.copy_from_slice(&Hash::hash(k));
+            println!("after copy");
             &hk
         } else {
             k
@@ -137,15 +143,19 @@ impl HMAC {
             *p ^= k;
         }
         let mut ih = Hash::new();
+        println!("before ih update");
         ih.update(&padded[..]);
         ih.update(input);
+        println!("after ih update");
 
         for p in padded.iter_mut() {
             *p ^= 0x6a;
         }
         let mut oh = Hash::new();
+        println!("before oh update");
         oh.update(&padded[..]);
         oh.update(ih.finalize());
+        println!("after oh update");
         oh.finalize()
     }
 
