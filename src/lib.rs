@@ -19,7 +19,7 @@ use ark_std::{marker::PhantomData, println, vec::Vec};
 use ark_ff::fields::PrimeField;
 use ark_crypto_primitives::{sponge::poseidon::{find_poseidon_ark_and_mds, PoseidonConfig}};
 use ark_crypto_primitives::crh::CRHScheme;
-use ark_bn254::{FrConfig, EdwardsAffine, EdwardsConfig, Fr};
+use ark_bn254::Fr;
 use ark_std::vec;
 use ark_serialize::{CanonicalSerialize, Compress};
 
