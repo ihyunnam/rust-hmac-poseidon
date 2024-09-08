@@ -15,7 +15,7 @@ use ark_crypto_primitives::crh::poseidon::{CRH, constraints::CRHGadget};
 use ark_r1cs_std::alloc::AllocVar;
 use ark_r1cs_std::fields::fp::FpVar;
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
-use ark_std::{marker::PhantomData, println, vec::Vec};
+use ark_std::{marker::PhantomData, println, time::Instant, vec::Vec};
 use ark_ff::fields::PrimeField;
 use ark_crypto_primitives::{sponge::poseidon::{find_poseidon_ark_and_mds, PoseidonConfig}};
 use ark_crypto_primitives::crh::CRHScheme;
@@ -132,7 +132,10 @@ impl HMAC {
         let mut hk = [0u8; 32];
         let k2 = if k.len() > 64 {
             //println!("before copy");
+            let start = Instant::now();
             hk.copy_from_slice(&Hash::hash(k));
+            let end = start.elapsed();
+            println!("time to hash {:?}", end);
             //println!("after copy");
             &hk
         } else {
