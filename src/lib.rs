@@ -152,13 +152,14 @@ impl HMAC {
             k
         };
         let mut padded = [0x36; 64];
-        let start = Instant::now();
+        
         for (p, &k) in padded.iter_mut().zip(k2.iter()) {
             *p ^= k;
         }
+        let start = Instant::now();
         let mut ih = Hash::new();
         let end = start.elapsed();
-        println!("padded zip {:?}", end);
+        println!("just new {:?}", end);
         //println!("before ih update");
         ih.update(&padded[..]);
         ih.update(input);
