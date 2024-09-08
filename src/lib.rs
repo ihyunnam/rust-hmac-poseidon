@@ -94,7 +94,10 @@ impl Hash {
         // self.state.store(&mut out);
         // out
         //println!("inside finalize");
+        let start = Instant::now();
         let hash_result = CRH::<Fr>::evaluate(&self.params, self.buffer).unwrap();
+        let end = start.elapsed();
+        println!("time to eval {:?}", end);
         let mut writer = vec![];
         hash_result.serialize_with_mode(&mut writer, Compress::Yes); // Convert the result to bytes
         let mut output = [0u8; 32];
@@ -135,7 +138,7 @@ impl HMAC {
             let start = Instant::now();
             hk.copy_from_slice(&Hash::hash(k));
             let end = start.elapsed();
-            println!("time to hash {:?}", end);
+            // println!("time to hash {:?}", end);
             //println!("after copy");
             &hk
         } else {
