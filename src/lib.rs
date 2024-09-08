@@ -45,12 +45,15 @@ impl Hash {
     fn _update(&mut self, input: impl AsRef<[u8]>) {
         // Convert input bytes to field elements and add to the buffer
         //println!("inside update");
+        let start = Instant::now();
         let input = input.as_ref();
         let mut field_elements: Vec<Fr> = input
             .chunks(32) // Split the input into chunks of the field size
             .map(Fr::from_be_bytes_mod_order) // Convert each chunk into a field element
             .collect();
         self.buffer.append(&mut field_elements); // Add field elements to the buffer
+        let end = start.elapsed();
+        println!("_update whole {:?}", end);
         //println!("end of update");
         // let input = input.as_ref();
         // let mut n = input.len();
@@ -98,12 +101,15 @@ impl Hash {
         let hash_result = CRH::<Fr>::evaluate(&self.params, self.buffer).unwrap();
         let end = start.elapsed();
         println!("time to eval {:?}", end);
+        let start = Instant::now();
         let mut writer = vec![];
         hash_result.serialize_with_mode(&mut writer, Compress::Yes); // Convert the result to bytes
         let mut output = [0u8; 32];
         // let bytes = &writer[..32.min(writer.len())]; // Take the first 32 bytes or less
         output[..32].copy_from_slice(&writer);
         //println!("end of finalize");
+        let end = start.elapsed();
+        println!("after eval in finalize {:?}", end);
         output
     }
 
@@ -130,6 +136,7 @@ pub struct HMAC {
 impl HMAC {
     /// Compute HMAC-Poseidon(`input`, `k`)
     pub fn mac(input: impl AsRef<[u8]>, k: impl AsRef<[u8]>) -> [u8; 32] {
+        let start = Instant::now();
         let input = input.as_ref();
         let k = k.as_ref();
         let mut hk = [0u8; 32];
@@ -149,6 +156,8 @@ impl HMAC {
             *p ^= k;
         }
         let mut ih = Hash::new();
+        let end = start.elapsed();
+        println!("time until new {:?}", end);
         //println!("before ih update");
         ih.update(&padded[..]);
         ih.update(input);
