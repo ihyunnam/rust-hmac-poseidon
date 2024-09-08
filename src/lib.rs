@@ -136,15 +136,15 @@ pub struct HMAC {
 impl HMAC {
     /// Compute HMAC-Poseidon(`input`, `k`)
     pub fn mac(input: impl AsRef<[u8]>, k: impl AsRef<[u8]>) -> [u8; 32] {
-        let start = Instant::now();
+        // let start = Instant::now();
         let input = input.as_ref();
         let k = k.as_ref();
         let mut hk = [0u8; 32];
         let k2 = if k.len() > 64 {
-            //println!("before copy");
-            let start = Instant::now();
+            println!("inside if?");
+            // let start = Instant::now();
             hk.copy_from_slice(&Hash::hash(k));
-            let end = start.elapsed();
+            // let end = start.elapsed();
             // println!("time to hash {:?}", end);
             //println!("after copy");
             &hk
@@ -152,12 +152,13 @@ impl HMAC {
             k
         };
         let mut padded = [0x36; 64];
+        let start = Instant::now();
         for (p, &k) in padded.iter_mut().zip(k2.iter()) {
             *p ^= k;
         }
         let mut ih = Hash::new();
         let end = start.elapsed();
-        println!("time until new {:?}", end);
+        println!("padded zip {:?}", end);
         //println!("before ih update");
         ih.update(&padded[..]);
         ih.update(input);
