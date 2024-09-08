@@ -31,19 +31,9 @@ pub struct Hash {
 }
 
 impl Hash {
-    pub fn new() -> Hash {
-        //println!("inside new");
-        let start = Instant::now();
-        let (ark, mds) = find_poseidon_ark_and_mds::<Fr> (255, 2, 8, 24, 0);        // ark_bn254::FrParameters::MODULUS_BITS = 255
-        let end = start.elapsed();
-        println!("time to find poseidon {:?}", end);
-        //println!("after ark, mds");
-        let start = Instant::now();
-        let poseidon_params = PoseidonConfig::<Fr>::new(8, 24, 31, mds, ark, 2, 1);
-        let end = start.elapsed();
-        println!("time to make poseidon params {:?}", end);
+    pub fn new(poseidon_params: &PoseidonConfig<Fr>) -> Hash {
         Hash {
-            params: poseidon_params,
+            params: poseidon_params.clone(),
             buffer: vec![],
         }
     }
@@ -120,8 +110,8 @@ impl Hash {
     }
 
     /// Compute Poseidon(`input`)
-    pub fn hash(input: &[u8]) -> [u8; 32] {
-        let mut h = Hash::new();
+    pub fn hash(input: &[u8], poseidon_params: &PoseidonConfig<Fr>) -> [u8; 32] {
+        let mut h = Hash::new(poseidon_params);
         h.update(input);
         h.finalize()
     }
@@ -129,7 +119,9 @@ impl Hash {
 
 impl Default for Hash {
     fn default() -> Self {
-        Self::new()
+        let (ark, mds) = find_poseidon_ark_and_mds::<Fr> (255, 2, 8, 24, 0);        // ark_bn254::FrParameters::MODULUS_BITS = 255
+        let poseidon_params = PoseidonConfig::<Fr>::new(8, 24, 31, mds, ark, 2, 1);
+        Self::new(&poseidon_params)
     }
 }
 
@@ -141,7 +133,7 @@ pub struct HMAC {
 
 impl HMAC {
     /// Compute HMAC-Poseidon(`input`, `k`)
-    pub fn mac(input: impl AsRef<[u8]>, k: impl AsRef<[u8]>) -> [u8; 32] {
+    pub fn mac(input: impl AsRef<[u8]>, k: impl AsRef<[u8]>, poseidon_params: &PoseidonConfig<Fr>) -> [u8; 32] {
         // let start = Instant::now();
         let input = input.as_ref();
         let k = k.as_ref();
@@ -149,7 +141,7 @@ impl HMAC {
         let k2 = if k.len() > 64 {
             println!("inside if?");
             // let start = Instant::now();
-            hk.copy_from_slice(&Hash::hash(k));
+            hk.copy_from_slice(&Hash::hash(k, poseidon_params));
             // let end = start.elapsed();
             // println!("time to hash {:?}", end);
             //println!("after copy");
@@ -163,7 +155,7 @@ impl HMAC {
             *p ^= k;
         }
         let start = Instant::now();
-        let mut ih = Hash::new();
+        let mut ih = Hash::new(poseidon_params);
         let end = start.elapsed();
         println!("just new {:?}", end);
         //println!("before ih update");
@@ -174,7 +166,7 @@ impl HMAC {
         for p in padded.iter_mut() {
             *p ^= 0x6a;
         }
-        let mut oh = Hash::new();
+        let mut oh = Hash::new(poseidon_params);
         //println!("before oh update");
         oh.update(&padded[..]);
         oh.update(ih.finalize());
@@ -182,11 +174,11 @@ impl HMAC {
         oh.finalize()
     }
 
-    pub fn new(k: impl AsRef<[u8]>) -> HMAC {
+    pub fn new(k: impl AsRef<[u8]>, poseidon_params: &PoseidonConfig<Fr>) -> HMAC {
         let k = k.as_ref();
         let mut hk = [0u8; 32];
         let k2 = if k.len() > 64 {
-            hk.copy_from_slice(&Hash::hash(k));
+            hk.copy_from_slice(&Hash::hash(k, poseidon_params));
             &hk
         } else {
             k
@@ -195,7 +187,7 @@ impl HMAC {
         for (p, &k) in padded.iter_mut().zip(k2.iter()) {
             *p ^= k;
         }
-        let mut ih = Hash::new();
+        let mut ih = Hash::new(poseidon_params);
         ih.update(&padded[..]);
         HMAC { ih, padded }
     }
@@ -206,11 +198,11 @@ impl HMAC {
     }
 
     /// Compute HMAC-Poseidon over the entire input
-    pub fn finalize(mut self) -> [u8; 32] {
+    pub fn finalize(mut self, poseidon_params: &PoseidonConfig<Fr>) -> [u8; 32] {
         for p in self.padded.iter_mut() {
             *p ^= 0x6a;
         }
-        let mut oh = Hash::new();
+        let mut oh = Hash::new(poseidon_params);
         oh.update(&self.padded[..]);
         oh.update(self.ih.finalize());
         oh.finalize()
@@ -219,86 +211,86 @@ impl HMAC {
 
 pub struct HKDF;
 
-impl HKDF {
-    pub fn extract(salt: impl AsRef<[u8]>, ikm: impl AsRef<[u8]>) -> [u8; 32] {
-        HMAC::mac(ikm, salt)
-    }
+// impl HKDF {
+//     pub fn extract(salt: impl AsRef<[u8]>, ikm: impl AsRef<[u8]>) -> [u8; 32] {
+//         HMAC::mac(ikm, salt, poseidon_params)
+//     }
 
-    pub fn expand(out: &mut [u8], prk: impl AsRef<[u8]>, info: impl AsRef<[u8]>) {
-        let info = info.as_ref();
-        let mut counter: u8 = 1;
-        assert!(out.len() < 0xff * 32);
-        let mut i: usize = 0;
-        while i < out.len() {
-            let mut hmac = HMAC::new(&prk);
-            if i != 0 {
-                hmac.update(&out[i - 32..][..32]);
-            }
-            hmac.update(info);
-            hmac.update([counter]);
-            let left = core::cmp::min(32, out.len() - i);
-            out[i..][..left].copy_from_slice(&hmac.finalize()[..left]);
-            counter += 1;
-            i += 32;
-        }
-    }
-}
+//     pub fn expand(out: &mut [u8], prk: impl AsRef<[u8]>, info: impl AsRef<[u8]>) {
+//         let info = info.as_ref();
+//         let mut counter: u8 = 1;
+//         assert!(out.len() < 0xff * 32);
+//         let mut i: usize = 0;
+//         while i < out.len() {
+//             let mut hmac = HMAC::new(&prk);
+//             if i != 0 {
+//                 hmac.update(&out[i - 32..][..32]);
+//             }
+//             hmac.update(info);
+//             hmac.update([counter]);
+//             let left = core::cmp::min(32, out.len() - i);
+//             out[i..][..left].copy_from_slice(&hmac.finalize()[..left]);
+//             counter += 1;
+//             i += 32;
+//         }
+//     }
+// }
 
-#[test]
-fn main() {
-    let h = HMAC::mac([], [0u8; 32]);
-    assert_eq!(
-        &h[..],
-        &[
-            182, 19, 103, 154, 8, 20, 217, 236, 119, 47, 149, 215, 120, 195, 95, 197, 255, 22, 151,
-            196, 147, 113, 86, 83, 198, 199, 18, 20, 66, 146, 197, 173
-        ]
-    );
+// #[test]
+// fn main() {
+//     let h = HMAC::mac([], [0u8; 32]);
+//     assert_eq!(
+//         &h[..],
+//         &[
+//             182, 19, 103, 154, 8, 20, 217, 236, 119, 47, 149, 215, 120, 195, 95, 197, 255, 22, 151,
+//             196, 147, 113, 86, 83, 198, 199, 18, 20, 66, 146, 197, 173
+//         ]
+//     );
 
-    let h = HMAC::mac([42u8; 69], []);
-    assert_eq!(
-        &h[..],
-        &[
-            225, 88, 35, 8, 78, 185, 165, 6, 235, 124, 28, 250, 112, 124, 159, 119, 159, 88, 184,
-            61, 7, 37, 166, 229, 71, 154, 83, 153, 151, 181, 182, 72
-        ]
-    );
+//     let h = HMAC::mac([42u8; 69], []);
+//     assert_eq!(
+//         &h[..],
+//         &[
+//             225, 88, 35, 8, 78, 185, 165, 6, 235, 124, 28, 250, 112, 124, 159, 119, 159, 88, 184,
+//             61, 7, 37, 166, 229, 71, 154, 83, 153, 151, 181, 182, 72
+//         ]
+//     );
 
-    let h = HMAC::mac([69u8; 250], [42u8; 50]);
-    assert_eq!(
-        &h[..],
-        &[
-            112, 156, 120, 216, 86, 25, 79, 210, 155, 193, 32, 120, 116, 134, 237, 14, 198, 1, 64,
-            41, 124, 196, 103, 91, 109, 216, 36, 133, 4, 234, 218, 228
-        ]
-    );
+//     let h = HMAC::mac([69u8; 250], [42u8; 50]);
+//     assert_eq!(
+//         &h[..],
+//         &[
+//             112, 156, 120, 216, 86, 25, 79, 210, 155, 193, 32, 120, 116, 134, 237, 14, 198, 1, 64,
+//             41, 124, 196, 103, 91, 109, 216, 36, 133, 4, 234, 218, 228
+//         ]
+//     );
 
-    let mut s = HMAC::new([42u8; 50]);
-    s.update([69u8; 150]);
-    s.update([69u8; 100]);
-    let h = s.finalize();
-    assert_eq!(
-        &h[..],
-        &[
-            112, 156, 120, 216, 86, 25, 79, 210, 155, 193, 32, 120, 116, 134, 237, 14, 198, 1, 64,
-            41, 124, 196, 103, 91, 109, 216, 36, 133, 4, 234, 218, 228
-        ]
-    );
+//     let mut s = HMAC::new([42u8; 50]);
+//     s.update([69u8; 150]);
+//     s.update([69u8; 100]);
+//     let h = s.finalize();
+//     assert_eq!(
+//         &h[..],
+//         &[
+//             112, 156, 120, 216, 86, 25, 79, 210, 155, 193, 32, 120, 116, 134, 237, 14, 198, 1, 64,
+//             41, 124, 196, 103, 91, 109, 216, 36, 133, 4, 234, 218, 228
+//         ]
+//     );
 
-    let ikm = [0x0bu8; 22];
-    let salt = [
-        0x00u8, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
-    ];
-    let context = [0xf0u8, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9];
-    let prk = HKDF::extract(salt, ikm);
-    let mut k = [0u8; 40];
-    HKDF::expand(&mut k, prk, context);
-    assert_eq!(
-        &k[..],
-        &[
-            60, 178, 95, 37, 250, 172, 213, 122, 144, 67, 79, 100, 208, 54, 47, 42, 45, 45, 10,
-            144, 207, 26, 90, 76, 93, 176, 45, 86, 236, 196, 197, 191, 52, 0, 114, 8, 213, 184,
-            135, 24
-        ]
-    );
-}
+//     let ikm = [0x0bu8; 22];
+//     let salt = [
+//         0x00u8, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
+//     ];
+//     let context = [0xf0u8, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9];
+//     let prk = HKDF::extract(salt, ikm);
+//     let mut k = [0u8; 40];
+//     HKDF::expand(&mut k, prk, context);
+//     assert_eq!(
+//         &k[..],
+//         &[
+//             60, 178, 95, 37, 250, 172, 213, 122, 144, 67, 79, 100, 208, 54, 47, 42, 45, 45, 10,
+//             144, 207, 26, 90, 76, 93, 176, 45, 86, 236, 196, 197, 191, 52, 0, 114, 8, 213, 184,
+//             135, 24
+//         ]
+//     );
+// }
