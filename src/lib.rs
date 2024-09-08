@@ -33,9 +33,15 @@ pub struct Hash {
 impl Hash {
     pub fn new() -> Hash {
         //println!("inside new");
+        let start = Instant::now();
         let (ark, mds) = find_poseidon_ark_and_mds::<Fr> (255, 2, 8, 24, 0);        // ark_bn254::FrParameters::MODULUS_BITS = 255
+        let end = start.elapsed();
+        println!("time to find poseidon {:?}", end);
         //println!("after ark, mds");
+        let start = Instant::now();
         let poseidon_params = PoseidonConfig::<Fr>::new(8, 24, 31, mds, ark, 2, 1);
+        let end = start.elapsed();
+        println!("time to make poseidon params {:?}", end);
         Hash {
             params: poseidon_params,
             buffer: vec![],
