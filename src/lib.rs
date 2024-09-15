@@ -11,15 +11,18 @@
     clippy::unreadable_literal
 )]
 
-use ark_crypto_primitives::crh::poseidon::{CRH, constraints::CRHGadget};
-use ark_r1cs_std::alloc::AllocVar;
-use ark_r1cs_std::fields::fp::FpVar;
-use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
-use ark_std::{marker::PhantomData, println, time::Instant, vec::Vec};
-use ark_ff::fields::PrimeField;
+use core::borrow::Borrow;
+
+use ark_crypto_primitives::{crh::{poseidon::{constraints::{CRHGadget, CRHParametersVar}, CRH}, CRHSchemeGadget}, sponge::Absorb};
+use ark_r1cs_std::{alloc::{AllocVar, AllocationMode}, fields::fp::AllocatedFp, prelude::Boolean, uint8::UInt8, ToBitsGadget, ToBytesGadget};
+use ark_r1cs_std::fields::{FieldVar, fp::FpVar};
+use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, LinearCombination, Namespace, SynthesisError, Variable};
+use ark_std::{marker::PhantomData, println, time::Instant, vec::Vec, One};
+use ark_ff::fields::{PrimeField, Field};
 use ark_crypto_primitives::{sponge::poseidon::{find_poseidon_ark_and_mds, PoseidonConfig}};
 use ark_crypto_primitives::crh::CRHScheme;
 use ark_bn254::Fr;
+// type F = Fr;
 use ark_std::vec;
 use ark_serialize::{CanonicalSerialize, Compress};
 
@@ -40,37 +43,12 @@ impl Hash {
 
     fn _update(&mut self, input: impl AsRef<[u8]>) {
         // Convert input bytes to field elements and add to the buffer
-        //println!("inside update");
-        let start = Instant::now();
         let input = input.as_ref();
         let mut field_elements: Vec<Fr> = input
             .chunks(32) // Split the input into chunks of the field size
             .map(Fr::from_be_bytes_mod_order) // Convert each chunk into a field element
             .collect();
         self.buffer.append(&mut field_elements); // Add field elements to the buffer
-        let end = start.elapsed();
-        println!("_update whole {:?}", end);
-        //println!("end of update");
-        // let input = input.as_ref();
-        // let mut n = input.len();
-        // self.len += n;
-        // let av = 64 - self.r;
-        // let tc = ::core::cmp::min(n, av);
-        // self.w[self.r..self.r + tc].copy_from_slice(&input[0..tc]);
-        // self.r += tc;
-        // n -= tc;
-        // let pos = tc;
-        // if self.r == 64 {
-        //     self.state.blocks(&self.w);
-        //     self.r = 0;
-        // }
-        // if self.r == 0 && n > 0 {
-        //     let rb = self.state.blocks(&input[pos..]);
-        //     if rb > 0 {
-        //         self.w[..rb].copy_from_slice(&input[pos + n - rb..]);
-        //         self.r = rb;
-        //     }
-        // }
     }
 
     /// Absorb content
@@ -79,38 +57,18 @@ impl Hash {
     }
 
     /// Compute SHA256(absorbed content)
-    pub fn finalize(self) -> [u8; 32] {
-        // let mut padded = [0u8; 128];
-        // padded[..self.r].copy_from_slice(&self.w[..self.r]);
-        // padded[self.r] = 0x80;
-        // let r = if self.r < 56 { 64 } else { 128 };
-        // let bits = self.len * 8;
-        // for i in 0..8 {
-        //     padded[r - 8 + i] = (bits as u64 >> (56 - i * 8)) as u8;
-        // }
-        // self.state.blocks(&padded[..r]);
-        // let mut out = [0u8; 32];
-        // self.state.store(&mut out);
-        // out
-        //println!("inside finalize");
-        let start = Instant::now();
+    pub fn finalize(self) -> Fr {
         let hash_result = CRH::<Fr>::evaluate(&self.params, self.buffer).unwrap();
-        let end = start.elapsed();
-        println!("time to eval {:?}", end);
-        let start = Instant::now();
-        let mut writer = vec![];
-        hash_result.serialize_with_mode(&mut writer, Compress::Yes); // Convert the result to bytes
-        let mut output = [0u8; 32];
-        // let bytes = &writer[..32.min(writer.len())]; // Take the first 32 bytes or less
-        output[..32].copy_from_slice(&writer);
-        //println!("end of finalize");
-        let end = start.elapsed();
-        println!("after eval in finalize {:?}", end);
-        output
+        // let mut writer = vec![];
+        // hash_result.serialize_with_mode(&mut writer, Compress::Yes); // Convert the result to bytes
+        // let mut output = [0u8; 32];
+        // output[..32].copy_from_slice(&writer);
+
+        hash_result
     }
 
     /// Compute Poseidon(`input`)
-    pub fn hash(input: &[u8], poseidon_params: &PoseidonConfig<Fr>) -> [u8; 32] {
+    pub fn hash(input: &[u8], poseidon_params: &PoseidonConfig<Fr>) -> Fr {
         let mut h = Hash::new(poseidon_params);
         h.update(input);
         h.finalize()
@@ -133,7 +91,7 @@ pub struct HMAC {
 
 impl HMAC {
     /// Compute HMAC-Poseidon(`input`, `k`)
-    pub fn mac(input: impl AsRef<[u8]>, k: impl AsRef<[u8]>, poseidon_params: &PoseidonConfig<Fr>) -> [u8; 32] {
+    pub fn mac(input: impl AsRef<[u8]>, k: impl AsRef<[u8]>, poseidon_params: &PoseidonConfig<Fr>) -> Fr {
         // let start = Instant::now();
         let input = input.as_ref();
         let k = k.as_ref();
@@ -141,7 +99,11 @@ impl HMAC {
         let k2 = if k.len() > 64 {
             println!("inside if?");
             // let start = Instant::now();
-            hk.copy_from_slice(&Hash::hash(k, poseidon_params));
+            let hash_fr = &Hash::hash(k, poseidon_params);
+            let mut writer = vec![];
+            hash_fr.serialize_with_mode(&mut writer, Compress::Yes); // Convert the result to bytes
+            hk[..32].copy_from_slice(&writer);
+            // hk.copy_from_slice(&Hash::hash(k, poseidon_params));
             // let end = start.elapsed();
             // println!("time to hash {:?}", end);
             //println!("after copy");
@@ -169,7 +131,12 @@ impl HMAC {
         let mut oh = Hash::new(poseidon_params);
         //println!("before oh update");
         oh.update(&padded[..]);
-        oh.update(ih.finalize());
+        let ih_fr = ih.finalize();
+        let mut writer = vec![];
+        ih_fr.serialize_with_mode(&mut writer, Compress::Yes); // Convert the result to bytes
+        // let mut output = [0u8; 32];
+        // output[..32].copy_from_slice(&writer);
+        oh.update(writer);
         //println!("after oh update");
         oh.finalize()
     }
@@ -178,7 +145,10 @@ impl HMAC {
         let k = k.as_ref();
         let mut hk = [0u8; 32];
         let k2 = if k.len() > 64 {
-            hk.copy_from_slice(&Hash::hash(k, poseidon_params));
+            let hash_fr = &Hash::hash(k, poseidon_params);
+            let mut writer = vec![];
+            hash_fr.serialize_with_mode(&mut writer, Compress::Yes); // Convert the result to bytes
+            hk[..32].copy_from_slice(&writer);
             &hk
         } else {
             k
@@ -198,99 +168,205 @@ impl HMAC {
     }
 
     /// Compute HMAC-Poseidon over the entire input
-    pub fn finalize(mut self, poseidon_params: &PoseidonConfig<Fr>) -> [u8; 32] {
+    pub fn finalize(mut self, poseidon_params: &PoseidonConfig<Fr>) -> Fr {
         for p in self.padded.iter_mut() {
             *p ^= 0x6a;
         }
         let mut oh = Hash::new(poseidon_params);
         oh.update(&self.padded[..]);
-        oh.update(self.ih.finalize());
+        
+        let ih_fr = self.ih.finalize();
+        let mut writer = vec![];
+        ih_fr.serialize_with_mode(&mut writer, Compress::Yes); // Convert the result to bytes
+        // let mut output = [0u8; 32];
+        // output[..32].copy_from_slice(&writer);
+
+        oh.update(writer);
         oh.finalize()
     }
 }
 
-pub struct HKDF;
+// Variable version of Hash to work within R1CS
+#[derive(Clone)]
+pub struct HashVar<F: PrimeField + Absorb> {
+    params: CRHParametersVar<F>, // Parameters variable
+    buffer: Vec<FpVar<F>>, // Buffer for absorbed elements
+}
 
-// impl HKDF {
-//     pub fn extract(salt: impl AsRef<[u8]>, ikm: impl AsRef<[u8]>) -> [u8; 32] {
-//         HMAC::mac(ikm, salt, poseidon_params)
-//     }
+impl<F: PrimeField + Absorb> HashVar<F> {
+    pub fn new(
+        cs: impl Into<Namespace<F>>, 
+        poseidon_params: &CRHParametersVar<F>
+    ) -> Result<Self, SynthesisError> {
+        Ok(HashVar {
+            params: poseidon_params.clone(),
+            buffer: vec![], // Initialize buffer
+        })
+    }
 
-//     pub fn expand(out: &mut [u8], prk: impl AsRef<[u8]>, info: impl AsRef<[u8]>) {
-//         let info = info.as_ref();
-//         let mut counter: u8 = 1;
-//         assert!(out.len() < 0xff * 32);
-//         let mut i: usize = 0;
-//         while i < out.len() {
-//             let mut hmac = HMAC::new(&prk);
-//             if i != 0 {
-//                 hmac.update(&out[i - 32..][..32]);
-//             }
-//             hmac.update(info);
-//             hmac.update([counter]);
-//             let left = core::cmp::min(32, out.len() - i);
-//             out[i..][..left].copy_from_slice(&hmac.finalize()[..left]);
-//             counter += 1;
-//             i += 32;
-//         }
-//     }
-// }
+    fn _update(&mut self, input: &[FpVar<F>]) {
+        // Add input elements to the buffer
+        self.buffer.extend_from_slice(input);
+    }
 
-// #[test]
-// fn main() {
-//     let h = HMAC::mac([], [0u8; 32]);
-//     assert_eq!(
-//         &h[..],
-//         &[
-//             182, 19, 103, 154, 8, 20, 217, 236, 119, 47, 149, 215, 120, 195, 95, 197, 255, 22, 151,
-//             196, 147, 113, 86, 83, 198, 199, 18, 20, 66, 146, 197, 173
-//         ]
-//     );
+    pub fn update(&mut self, input: &[FpVar<F>]) {
+        self._update(input)
+    }
 
-//     let h = HMAC::mac([42u8; 69], []);
-//     assert_eq!(
-//         &h[..],
-//         &[
-//             225, 88, 35, 8, 78, 185, 165, 6, 235, 124, 28, 250, 112, 124, 159, 119, 159, 88, 184,
-//             61, 7, 37, 166, 229, 71, 154, 83, 153, 151, 181, 182, 72
-//         ]
-//     );
+    // pub fn finalize1(self) -> [u8; 32] {
+    //     let hash_result = CRH::<Fr>::evaluate(&self.params, self.buffer).unwrap();
+    //     let mut writer = vec![];
+    //     hash_result.serialize_with_mode(&mut writer, Compress::Yes); // Convert the result to bytes
+    //     let mut output = [0u8; 32];
+    //     output[..32].copy_from_slice(&writer);
 
-//     let h = HMAC::mac([69u8; 250], [42u8; 50]);
-//     assert_eq!(
-//         &h[..],
-//         &[
-//             112, 156, 120, 216, 86, 25, 79, 210, 155, 193, 32, 120, 116, 134, 237, 14, 198, 1, 64,
-//             41, 124, 196, 103, 91, 109, 216, 36, 133, 4, 234, 218, 228
-//         ]
-//     );
+    //     output
+    // }
+    
+    pub fn finalize(&self) -> Result<FpVar<F>, SynthesisError> {
+        let hash_result = CRHGadget::<F>::evaluate(&self.params, &self.buffer)?;
+        // let mut writer = vec![];
+        // hash_result.serialize_with_mode(&mut writer, Compress::Yes).unwrap();
 
-//     let mut s = HMAC::new([42u8; 50]);
-//     s.update([69u8; 150]);
-//     s.update([69u8; 100]);
-//     let h = s.finalize();
-//     assert_eq!(
-//         &h[..],
-//         &[
-//             112, 156, 120, 216, 86, 25, 79, 210, 155, 193, 32, 120, 116, 134, 237, 14, 198, 1, 64,
-//             41, 124, 196, 103, 91, 109, 216, 36, 133, 4, 234, 218, 228
-//         ]
-//     );
+        // // Convert serialized hash result to UInt8 representation
+        // let hash_bytes = writer
+        //     .into_iter()
+        //     .map(|b| UInt8::constant(b))
+        //     .collect::<Vec<_>>();
 
-//     let ikm = [0x0bu8; 22];
-//     let salt = [
-//         0x00u8, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
-//     ];
-//     let context = [0xf0u8, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9];
-//     let prk = HKDF::extract(salt, ikm);
-//     let mut k = [0u8; 40];
-//     HKDF::expand(&mut k, prk, context);
-//     assert_eq!(
-//         &k[..],
-//         &[
-//             60, 178, 95, 37, 250, 172, 213, 122, 144, 67, 79, 100, 208, 54, 47, 42, 45, 45, 10,
-//             144, 207, 26, 90, 76, 93, 176, 45, 86, 236, 196, 197, 191, 52, 0, 114, 8, 213, 184,
-//             135, 24
-//         ]
-//     );
-// }
+        Ok(hash_result)
+    }
+
+    pub fn hash(
+        cs: impl Into<Namespace<F>>,
+        input: &[FpVar<F>],
+        poseidon_params: &CRHParametersVar<F>,
+    ) -> Result<FpVar<F>, SynthesisError> {
+        let mut h = HashVar::new(cs, poseidon_params)?;
+        h.update(input);
+        h.finalize()
+    }
+}
+
+#[derive(Clone)]
+pub struct HMACGadget<F: PrimeField + Absorb> {
+    ih: HashVar<F>,
+    padded: Vec<UInt8<F>>, // UInt8 for bytes in R1CS
+}
+
+impl<F: PrimeField + Absorb> HMACGadget<F> {
+    pub fn mac(
+        // cs: impl Into<Namespace<F>>,
+        cs: ConstraintSystemRef<F>,
+        input: &[FpVar<F>],
+        k: &[FpVar<F>],
+        poseidon_params: &CRHParametersVar<F>,
+    ) -> Result<FpVar<F>, SynthesisError> {
+        // let cs = cs.into(); 
+
+        let input = input.as_ref();
+        let k = k.as_ref();
+        let mut hk = [0u8; 32];
+        // let k2 = if k.len() > 64 {
+        //     let hash_fr = &HashVar::hash(cs.clone(), k, poseidon_params).unwrap();
+        //     let mut writer = vec![];
+        //     hash_fr.serialize_with_mode(&mut writer, Compress::Yes); // Convert the result to bytes
+        //     hk[..32].copy_from_slice(&writer);
+        //     // hk.copy_from_slice(&Hash::hash(k, poseidon_params));
+        //     // let end = start.elapsed();
+        //     // println!("time to hash {:?}", end);
+        //     //println!("after copy");
+        //     &hk
+        // } else {
+        //     k
+        // };
+
+        let mut k2 = vec![];
+        for elem in k {
+            k2.append(&mut elem.to_bytes().unwrap());
+        }
+        let mut padded = vec![UInt8::<F>::constant(0x36); 64];
+        
+        for (p, k) in padded.iter_mut().zip(k2.iter()) {
+            // let k_flat = vec![];
+            // for elem in k {
+            //     k_flat.push(elem);
+            // }
+            *p = p.xor(k).unwrap();
+        }
+
+        // Create the inner hash instance and update it with padded and input
+        let mut ih = HashVar::new(cs.clone(), poseidon_params)?;
+        // for elem in padded {
+        let padded_fr = from_bytes_le(cs.clone(), &padded).unwrap();
+        // }
+        // let padded_fr = FpVar::<F>::from(padded.to_bits_be().unwrap());
+        ih.update(&[padded_fr.into()]);
+        // ih.update(&input.iter().map(|byte| byte).collect::<Result<Vec<_>, _>>()?);
+        ih.update(&input);
+
+        // Adjust padded for the outer hash
+        for p in padded.iter_mut() {
+            *p = p.xor(&UInt8::<F>::constant(0x6a)).unwrap();
+        }
+
+        // Create the outer hash instance
+        let padded_fr = from_bytes_le(cs.clone(), &padded).unwrap();
+        let mut oh = HashVar::new(cs.clone(), poseidon_params)?;
+        oh.update(&[padded_fr.into()]);
+        // oh.update(&padded.iter().map(|byte| byte).collect::<Result<Vec<_>, _>>()?);
+        oh.update(&[ih.finalize().unwrap()]);
+
+        oh.finalize()
+    }
+}
+
+/// Reconstructs `AllocatedFp<F>` from its little-endian byte representation.
+pub fn from_bytes_le<F: PrimeField + Absorb> (cs: ConstraintSystemRef<F>, bytes: &Vec<UInt8<F>>) -> Result<AllocatedFp<F>, SynthesisError> {
+    // Convert bytes to bits in little-endian order
+    let mut bits: Vec<Boolean<F>> = Vec::new();
+    for byte in bytes.iter() {
+        bits.extend_from_slice(&byte.to_bits_le()?);
+    }
+
+    // Create a linear combination from the bits
+    let mut lc = LinearCombination::zero();
+    let mut coeff = F::one();
+
+    for bit in bits {
+        match bit {
+            Boolean::Constant(b) => {
+                if b {
+                    lc += (coeff, Variable::One);
+                }
+            }
+            Boolean::Is(var) => {
+                lc += (coeff, var.variable());
+            }
+            Boolean::Not(var) => {
+                lc = lc + (coeff, Variable::One) - (coeff, var.variable());
+            }
+        }
+        coeff.double_in_place(); // Each bit represents an increasing power of 2
+    }
+
+    // Allocate a new variable in the constraint system using the linear combination
+    let variable = cs.new_lc(lc)?;
+
+    // Return the newly constructed AllocatedFp
+    Ok(AllocatedFp::new(None, variable, cs))
+}
+
+impl<F: PrimeField + Absorb> AllocVar<HashVar<F>, F> for HashVar<F> {
+    fn new_variable<T: Borrow<HashVar<F>>>(
+        cs: impl Into<Namespace<F>>,
+        f: impl FnOnce() -> Result<T, SynthesisError>,
+        _mode: AllocationMode,
+    ) -> Result<Self, SynthesisError> {
+        let hash = f()?.borrow().clone();
+        Ok(HashVar {
+            params: hash.params,
+            buffer: hash.buffer,
+        })
+    }
+}
