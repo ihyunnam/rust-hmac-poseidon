@@ -266,8 +266,8 @@ impl<F: PrimeField + Absorb> HMACGadget<F> {
 
         let input = input.as_ref();
         let k = k.as_ref();
-        let mut hk = [0u8; 32];
-        // let k2 = if k.len() > 64 {
+        // let mut hk = [0u8; 32];
+        // let k2 = if k.len() > 64 {       // TODO: just make sure k<64
         //     let hash_fr = &HashVar::hash(cs.clone(), k, poseidon_params).unwrap();
         //     let mut writer = vec![];
         //     hash_fr.serialize_with_mode(&mut writer, Compress::Yes); // Convert the result to bytes
@@ -310,7 +310,7 @@ impl<F: PrimeField + Absorb> HMACGadget<F> {
             *p = p.xor(&UInt8::<F>::constant(0x6a)).unwrap();
         }
 
-        // Create the outer hash instance
+        // Create the out er hash instance
         let padded_fr = from_bytes_le(cs.clone(), &padded).unwrap();
         let mut oh = HashVar::new(cs.clone(), poseidon_params)?;
         oh.update(&[padded_fr.into()]);
