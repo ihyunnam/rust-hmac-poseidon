@@ -258,8 +258,8 @@ impl<F: PrimeField + Absorb> HMACGadget<F> {
     pub fn mac(
         // cs: impl Into<Namespace<F>>,
         cs: ConstraintSystemRef<F>,
-        input: &[FpVar<F>],
-        k: &[FpVar<F>],
+        input: &[UInt8<F>],
+        k: &[UInt8<F>],
         poseidon_params: &CRHParametersVar<F>,
     ) -> Result<FpVar<F>, SynthesisError> {
         // let cs = cs.into(); 
@@ -281,10 +281,11 @@ impl<F: PrimeField + Absorb> HMACGadget<F> {
         //     k
         // };
 
-        let mut k2 = vec![];
-        for elem in k {
-            k2.append(&mut elem.to_bytes().unwrap());
-        }
+        // let mut k2 = vec![];
+        // for elem in k {
+        //     k2.append(&mut elem.to_bytes().unwrap());
+        // }
+        let k2 = k;
         let mut padded = vec![UInt8::<F>::constant(0x36); 64];
         
         for (p, k) in padded.iter_mut().zip(k2.iter()) {
@@ -292,7 +293,7 @@ impl<F: PrimeField + Absorb> HMACGadget<F> {
             // for elem in k {
             //     k_flat.push(elem);
             // }
-            *p = p.xor(k).unwrap();
+            *p = p.xor(k).unwrap();     // I think UInt<F> R1CS var is directly possible
         }
 
         // Create the inner hash instance and update it with padded and input
@@ -303,14 +304,14 @@ impl<F: PrimeField + Absorb> HMACGadget<F> {
         // let padded_fr = FpVar::<F>::from(padded.to_bits_be().unwrap());
         ih.update(&[padded_fr.into()]);
         // ih.update(&input.iter().map(|byte| byte).collect::<Result<Vec<_>, _>>()?);
-        ih.update(&input);
+        ih.update(input);       // require FpVar<F>
 
         // Adjust padded for the outer hash
         for p in padded.iter_mut() {
             *p = p.xor(&UInt8::<F>::constant(0x6a)).unwrap();
         }
 
-        // Create the out er hash instance
+        // Create the outer hash instance
         let padded_fr = from_bytes_le(cs.clone(), &padded).unwrap();
         let mut oh = HashVar::new(cs.clone(), poseidon_params)?;
         oh.update(&[padded_fr.into()]);
@@ -321,6 +322,7 @@ impl<F: PrimeField + Absorb> HMACGadget<F> {
     }
 }
 
+/* I think I made this and it's probably hella slow... DO NOT USE */
 /// Reconstructs `AllocatedFp<F>` from its little-endian byte representation.
 pub fn from_bytes_le<F: PrimeField + Absorb> (cs: ConstraintSystemRef<F>, bytes: &Vec<UInt8<F>>) -> Result<AllocatedFp<F>, SynthesisError> {
     // Convert bytes to bits in little-endian order
