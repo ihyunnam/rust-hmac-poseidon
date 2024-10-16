@@ -18,10 +18,10 @@ use ark_r1cs_std::{alloc::{AllocVar, AllocationMode}, fields::fp::AllocatedFp, p
 use ark_r1cs_std::fields::{FieldVar, fp::FpVar};
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, LinearCombination, Namespace, SynthesisError, Variable};
 use ark_std::{marker::PhantomData, println, time::Instant, vec::Vec, One};
-use ark_ff::fields::{PrimeField, Field};
+use ark_ff::{fields::{Field, PrimeField}, BigInt, BigInteger};
 use ark_crypto_primitives::{sponge::poseidon::{find_poseidon_ark_and_mds, PoseidonConfig}};
 use ark_crypto_primitives::crh::CRHScheme;
-use ark_bn254::Fr;
+use ark_bls12_377::Fr;
 // type F = Fr;
 use ark_std::vec;
 use ark_serialize::{CanonicalSerialize, Compress};
@@ -44,11 +44,14 @@ impl Hash {
     fn _update(&mut self, input: impl AsRef<[u8]>) {
         // Convert input bytes to field elements and add to the buffer
         let input = input.as_ref();
-        let mut field_elements: Vec<Fr> = input
-            .chunks(32) // Split the input into chunks of the field size
-            .map(Fr::from_be_bytes_mod_order) // Convert each chunk into a field element
-            .collect();
-        self.buffer.append(&mut field_elements); // Add field elements to the buffer
+        // I think field size is 377 for bls12-377??
+
+        // let mut field_elements: Vec<Fr> = input
+        //     .chunks(32) // Split the input into chunks of the field size
+        //     .map(Fr::from_be_bytes_mod_order) // Convert each chunk into a field element
+        //     .collect();
+        let field_element: Fr = Fr::from_le_bytes_mod_order(input);
+        self.buffer.push(field_element); // Add field elements to the buffer
     }
 
     /// Absorb content
@@ -75,10 +78,11 @@ impl Hash {
     }
 }
 
+/* Not used in code. */
 impl Default for Hash {
     fn default() -> Self {
-        let (ark, mds) = find_poseidon_ark_and_mds::<Fr> (255, 2, 8, 24, 0);        // ark_bn254::FrParameters::MODULUS_BITS = 255
-        let poseidon_params = PoseidonConfig::<Fr>::new(8, 24, 31, mds, ark, 2, 1);
+        let (ark, mds) = find_poseidon_ark_and_mds::<Fr> (255, 2, 8, 31, 0);        // ark_bn254::FrParameters::MODULUS_BITS = 255
+        let poseidon_params = PoseidonConfig::<Fr>::new(8, 31, 17, mds, ark, 2, 1);
         Self::new(&poseidon_params)
     }
 }
@@ -89,40 +93,46 @@ pub struct HMAC {
     padded: [u8; 64],
 }
 
-impl HMAC {
+impl HMAC {     // THE THINGS WE HMAC ARE BOTH Fr (h_i, v_i)
     /// Compute HMAC-Poseidon(`input`, `k`)
-    pub fn mac(input: impl AsRef<[u8]>, k: impl AsRef<[u8]>, poseidon_params: &PoseidonConfig<Fr>) -> Fr {
+    pub fn mac(input: Vec<Fr>, k: Fr, poseidon_params: &PoseidonConfig<Fr>) -> Fr {
         // let start = Instant::now();
-        let input = input.as_ref();
-        let k = k.as_ref();
-        let mut hk = [0u8; 32];
-        let k2 = if k.len() > 64 {
-            println!("inside if?");
-            // let start = Instant::now();
-            let hash_fr = &Hash::hash(k, poseidon_params);
-            let mut writer = vec![];
-            hash_fr.serialize_with_mode(&mut writer, Compress::Yes); // Convert the result to bytes
-            hk[..32].copy_from_slice(&writer);
-            // hk.copy_from_slice(&Hash::hash(k, poseidon_params));
-            // let end = start.elapsed();
-            // println!("time to hash {:?}", end);
-            //println!("after copy");
-            &hk
-        } else {
-            k
-        };
+        // let input = input.as_ref();
+        // let k = k.as_ref();
+        // let mut hk = [0u8; 32];
+        // let k2 = if k.len() > 64 {
+        //     println!("inside if?"); // I don't think this gets triggered
+        //     // let start = Instant::now();
+        //     let hash_fr = &Hash::hash(k, poseidon_params);
+        //     let mut writer = vec![];
+        //     hash_fr.serialize_with_mode(&mut writer, Compress::Yes); // Convert the result to bytes
+        //     hk[..32].copy_from_slice(&writer);
+        //     // hk.copy_from_slice(&Hash::hash(k, poseidon_params));
+        //     // let end = start.elapsed();
+        //     // println!("time to hash {:?}", end);
+        //     //println!("after copy");
+        //     &hk
+        // } else {
+        //     k
+        // };
+
+        let mut k2 = vec![];
+        k.serialize_compressed(&mut k2);
+        // TODO: just make sure k: Fr gets serialized to length <64
         let mut padded = [0x36; 64];
         
         for (p, &k) in padded.iter_mut().zip(k2.iter()) {
             *p ^= k;
         }
-        let start = Instant::now();
+        // let start = Instant::now();
         let mut ih = Hash::new(poseidon_params);
-        let end = start.elapsed();
-        println!("just new {:?}", end);
+        // let end = start.elapsed();
+        // println!("just new {:?}", end);
         //println!("before ih update");
         ih.update(&padded[..]);
-        ih.update(input);
+        // ih.update(input);
+
+        ih.buffer.extend(input);   // instead of ih.update(input) push input to buffer directly because input already Fr
         //println!("after ih update");
 
         for p in padded.iter_mut() {
@@ -131,59 +141,60 @@ impl HMAC {
         let mut oh = Hash::new(poseidon_params);
         //println!("before oh update");
         oh.update(&padded[..]);
-        let ih_fr = ih.finalize();
-        let mut writer = vec![];
-        ih_fr.serialize_with_mode(&mut writer, Compress::Yes); // Convert the result to bytes
-        // let mut output = [0u8; 32];
-        // output[..32].copy_from_slice(&writer);
-        oh.update(writer);
+        // let ih_fr = ih.finalize();
+        oh.buffer.push(ih.finalize());  // since ih.finalize() returns Fr already, push instead of oh.update
+        // let mut writer = vec![];
+        // ih_fr.serialize_with_mode(&mut writer, Compress::Yes); // Convert the result to bytes
+        // oh.update(writer);
         //println!("after oh update");
         oh.finalize()
     }
 
-    pub fn new(k: impl AsRef<[u8]>, poseidon_params: &PoseidonConfig<Fr>) -> HMAC {
-        let k = k.as_ref();
-        let mut hk = [0u8; 32];
-        let k2 = if k.len() > 64 {
-            let hash_fr = &Hash::hash(k, poseidon_params);
-            let mut writer = vec![];
-            hash_fr.serialize_with_mode(&mut writer, Compress::Yes); // Convert the result to bytes
-            hk[..32].copy_from_slice(&writer);
-            &hk
-        } else {
-            k
-        };
-        let mut padded = [0x36; 64];
-        for (p, &k) in padded.iter_mut().zip(k2.iter()) {
-            *p ^= k;
-        }
-        let mut ih = Hash::new(poseidon_params);
-        ih.update(&padded[..]);
-        HMAC { ih, padded }
-    }
+    /* originally only used in HKDF */
+    // pub fn new(k: impl AsRef<[u8]>, poseidon_params: &PoseidonConfig<Fr>) -> HMAC {
+    //     let k = k.as_ref();
+    //     let mut hk = [0u8; 32];
+    //     let k2 = if k.len() > 64 {
+    //         let hash_fr = &Hash::hash(k, poseidon_params);
+    //         let mut writer = vec![];
+    //         hash_fr.serialize_with_mode(&mut writer, Compress::Yes); // Convert the result to bytes
+    //         hk[..32].copy_from_slice(&writer);
+    //         &hk
+    //     } else {
+    //         k
+    //     };
+    //     let mut padded = [0x36; 64];
+    //     for (p, &k) in padded.iter_mut().zip(k2.iter()) {
+    //         *p ^= k;
+    //     }
+    //     let mut ih = Hash::new(poseidon_params);
+    //     ih.update(&padded[..]);
+    //     HMAC { ih, padded }
+    // }
 
     /// Absorb content
     pub fn update(&mut self, input: impl AsRef<[u8]>) {
         self.ih.update(input);
     }
 
-    /// Compute HMAC-Poseidon over the entire input
-    pub fn finalize(mut self, poseidon_params: &PoseidonConfig<Fr>) -> Fr {
-        for p in self.padded.iter_mut() {
-            *p ^= 0x6a;
-        }
-        let mut oh = Hash::new(poseidon_params);
-        oh.update(&self.padded[..]);
+    /* originally only used in HKDF */
+    // /// Compute HMAC-Poseidon over the entire input
+    // pub fn finalize(mut self, poseidon_params: &PoseidonConfig<Fr>) -> Fr {
+    //     for p in self.padded.iter_mut() {
+    //         *p ^= 0x6a;
+    //     }
+    //     let mut oh = Hash::new(poseidon_params);
+    //     oh.update(&self.padded[..]);
         
-        let ih_fr = self.ih.finalize();
-        let mut writer = vec![];
-        ih_fr.serialize_with_mode(&mut writer, Compress::Yes); // Convert the result to bytes
-        // let mut output = [0u8; 32];
-        // output[..32].copy_from_slice(&writer);
+    //     let ih_fr = self.ih.finalize();
+    //     let mut writer = vec![];
+    //     ih_fr.serialize_with_mode(&mut writer, Compress::Yes); // Convert the result to bytes
+    //     // let mut output = [0u8; 32];
+    //     // output[..32].copy_from_slice(&writer);
 
-        oh.update(writer);
-        oh.finalize()
-    }
+    //     oh.update(writer);
+    //     oh.finalize()
+    // }
 }
 
 // Variable version of Hash to work within R1CS
@@ -204,12 +215,17 @@ impl<F: PrimeField + Absorb> HashVar<F> {
         })
     }
 
-    fn _update(&mut self, input: &[FpVar<F>]) {
+    fn _update(&mut self, input: &[UInt8<F>]) {
         // Add input elements to the buffer
-        self.buffer.extend_from_slice(input);
+        let input_bits: Vec<Boolean<F>> = input.to_bits_le().unwrap();       // TODO: NOT SURE IF CORRECT
+        let input_bigint = BigInteger::from_bits_le(input_bits.as_slice());
+
+        let input_F = F::from_bigint(input_bigint).unwrap();
+        let field_element: FpVar<F> = FpVar::constant(input_F);
+        self.buffer.push(field_element);
     }
 
-    pub fn update(&mut self, input: &[FpVar<F>]) {
+    pub fn update(&mut self, input: &[UInt8<F>]) {
         self._update(input)
     }
 
@@ -237,15 +253,16 @@ impl<F: PrimeField + Absorb> HashVar<F> {
         Ok(hash_result)
     }
 
-    pub fn hash(
-        cs: impl Into<Namespace<F>>,
-        input: &[FpVar<F>],
-        poseidon_params: &CRHParametersVar<F>,
-    ) -> Result<FpVar<F>, SynthesisError> {
-        let mut h = HashVar::new(cs, poseidon_params)?;
-        h.update(input);
-        h.finalize()
-    }
+    /* not used */
+    // pub fn hash(
+    //     cs: impl Into<Namespace<F>>,
+    //     input: &[FpVar<F>],
+    //     poseidon_params: &CRHParametersVar<F>,
+    // ) -> Result<FpVar<F>, SynthesisError> {
+    //     let mut h = HashVar::new(cs, poseidon_params)?;
+    //     h.update(input);
+    //     h.finalize()
+    // }
 }
 
 #[derive(Clone)]
@@ -256,68 +273,31 @@ pub struct HMACGadget<F: PrimeField + Absorb> {
 
 impl<F: PrimeField + Absorb> HMACGadget<F> {
     pub fn mac(
-        // cs: impl Into<Namespace<F>>,
         cs: ConstraintSystemRef<F>,
-        input: &[UInt8<F>],
-        k: &[UInt8<F>],
+        input: &[FpVar<F>],
+        k: &FpVar<F>,
         poseidon_params: &CRHParametersVar<F>,
     ) -> Result<FpVar<F>, SynthesisError> {
         // let cs = cs.into(); 
+        let k2 = k.to_bytes().unwrap();     // bigint->to_bytes_le under the hood. // TODO: check compressed or not.
 
-        let input = input.as_ref();
-        let k = k.as_ref();
-        // let mut hk = [0u8; 32];
-        // let k2 = if k.len() > 64 {       // TODO: just make sure k<64
-        //     let hash_fr = &HashVar::hash(cs.clone(), k, poseidon_params).unwrap();
-        //     let mut writer = vec![];
-        //     hash_fr.serialize_with_mode(&mut writer, Compress::Yes); // Convert the result to bytes
-        //     hk[..32].copy_from_slice(&writer);
-        //     // hk.copy_from_slice(&Hash::hash(k, poseidon_params));
-        //     // let end = start.elapsed();
-        //     // println!("time to hash {:?}", end);
-        //     //println!("after copy");
-        //     &hk
-        // } else {
-        //     k
-        // };
-
-        // let mut k2 = vec![];
-        // for elem in k {
-        //     k2.append(&mut elem.to_bytes().unwrap());
-        // }
-        let k2 = k;
-        let mut padded = vec![UInt8::<F>::constant(0x36); 64];
-        
-        for (p, k) in padded.iter_mut().zip(k2.iter()) {
-            // let k_flat = vec![];
-            // for elem in k {
-            //     k_flat.push(elem);
-            // }
-            *p = p.xor(k).unwrap();     // I think UInt<F> R1CS var is directly possible
+        // TODO: just make sure k: Fr gets serialized to length <64
+        let mut padded = [0x36; 64];        // does this need to be uint8<f> as well?
+        let padded_var: Vec<UInt8<F>> = padded.iter().map(|&b| UInt8::<F>::constant(b)).collect();
+        for (p, &k) in padded_var.iter_mut().zip(k2.iter()) {
+            p.xor(&k).unwrap();
         }
+        let mut ih = HashVar::new(cs.clone(), poseidon_params).unwrap();
+        ih.update(&padded_var[..]);
 
-        // Create the inner hash instance and update it with padded and input
-        let mut ih = HashVar::new(cs.clone(), poseidon_params)?;
-        // for elem in padded {
-        let padded_fr = from_bytes_le(cs.clone(), &padded).unwrap();
-        // }
-        // let padded_fr = FpVar::<F>::from(padded.to_bits_be().unwrap());
-        ih.update(&[padded_fr.into()]);
-        // ih.update(&input.iter().map(|byte| byte).collect::<Result<Vec<_>, _>>()?);
-        ih.update(input);       // require FpVar<F>
+        ih.buffer.extend(input);   // instead of ih.update(input) push input to buffer directly because input already Fr
 
-        // Adjust padded for the outer hash
-        for p in padded.iter_mut() {
-            *p = p.xor(&UInt8::<F>::constant(0x6a)).unwrap();
+        for p in padded_var.iter_mut() {
+            *p ^= 0x6a;
         }
-
-        // Create the outer hash instance
-        let padded_fr = from_bytes_le(cs.clone(), &padded).unwrap();
-        let mut oh = HashVar::new(cs.clone(), poseidon_params)?;
-        oh.update(&[padded_fr.into()]);
-        // oh.update(&padded.iter().map(|byte| byte).collect::<Result<Vec<_>, _>>()?);
-        oh.update(&[ih.finalize().unwrap()]);
-
+        let mut oh = HashVar::new(cs.clone(), poseidon_params).unwrap();
+        oh.update(&padded_var[..]);
+        oh.buffer.push(ih.finalize());  // since ih.finalize() returns Fr already, push instead of oh.update
         oh.finalize()
     }
 }
