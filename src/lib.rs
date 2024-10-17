@@ -14,7 +14,7 @@
 use core::borrow::Borrow;
 
 use ark_crypto_primitives::{crh::{poseidon::{constraints::{CRHGadget, CRHParametersVar}, CRH}, CRHSchemeGadget}, sponge::Absorb};
-use ark_r1cs_std::{alloc::{AllocVar, AllocationMode}, fields::fp::AllocatedFp, prelude::Boolean, uint8::UInt8, ToBitsGadget, ToBytesGadget};
+use ark_r1cs_std::{R1CSVar, alloc::{AllocVar, AllocationMode}, fields::fp::AllocatedFp, prelude::Boolean, uint8::UInt8, ToBitsGadget, ToBytesGadget};
 use ark_r1cs_std::fields::{FieldVar, fp::FpVar};
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, LinearCombination, Namespace, SynthesisError, Variable};
 use ark_std::{marker::PhantomData, println, time::Instant, vec::Vec, One};
@@ -215,18 +215,20 @@ impl<F: PrimeField + Absorb> HashVar<F> {
         })
     }
 
-    fn _update(&mut self, input: &[UInt8<F>]) {
+    fn _update(&mut self, input: &[UInt8<F>], cs: ConstraintSystemRef<F>) {
         // Add input elements to the buffer
         let input_bits: Vec<Boolean<F>> = input.to_bits_le().unwrap();       // TODO: NOT SURE IF CORRECT
-        let input_bigint = BigInteger::from_bits_le(input_bits.as_slice());
+        let input_fr = from_bits(cs.clone(), input_bits);
+        // let input_bigint = BigInteger::from_bits_le(input_bits.as_slice());
 
-        let input_F = F::from_bigint(input_bigint).unwrap();
-        let field_element: FpVar<F> = FpVar::constant(input_F);
-        self.buffer.push(field_element);
+        // let input_F: F = F::from(input_bits[0]);
+        // F::from_bigint(input_bigint).unwrap();
+        // let field_element: FpVar<F> = FpVar::constant(input_F);
+        self.buffer.push(input_fr);
     }
 
-    pub fn update(&mut self, input: &[UInt8<F>]) {
-        self._update(input)
+    pub fn update(&mut self, input: &[UInt8<F>], cs: ConstraintSystemRef<F>) {
+        self._update(input, cs)
     }
 
     // pub fn finalize1(self) -> [u8; 32] {
@@ -274,30 +276,31 @@ pub struct HMACGadget<F: PrimeField + Absorb> {
 impl<F: PrimeField + Absorb> HMACGadget<F> {
     pub fn mac(
         cs: ConstraintSystemRef<F>,
-        input: &[FpVar<F>],
-        k: &FpVar<F>,
+        input: Vec<FpVar<F>>,
+        k: FpVar<F>,
         poseidon_params: &CRHParametersVar<F>,
     ) -> Result<FpVar<F>, SynthesisError> {
         // let cs = cs.into(); 
-        let k2 = k.to_bytes().unwrap();     // bigint->to_bytes_le under the hood. // TODO: check compressed or not.
+        let k2: Vec<UInt8<F>> = k.to_bytes().unwrap();     // bigint->to_bytes_le under the hood. // TODO: check compressed or not.
 
         // TODO: just make sure k: Fr gets serialized to length <64
-        let mut padded = [0x36; 64];        // does this need to be uint8<f> as well?
-        let padded_var: Vec<UInt8<F>> = padded.iter().map(|&b| UInt8::<F>::constant(b)).collect();
-        for (p, &k) in padded_var.iter_mut().zip(k2.iter()) {
-            p.xor(&k).unwrap();
+        let padded = [0x36; 64];        // does this need to be uint8<f> as well?
+        let mut padded_var: Vec<UInt8<F>> = padded.iter().map(|&b| UInt8::<F>::constant(b)).collect();
+        for (p, k) in padded_var.iter_mut().zip(k2.iter()) {
+            p.xor(k).unwrap();
         }
         let mut ih = HashVar::new(cs.clone(), poseidon_params).unwrap();
-        ih.update(&padded_var[..]);
+        ih.update(&padded_var[..], cs.clone());
 
         ih.buffer.extend(input);   // instead of ih.update(input) push input to buffer directly because input already Fr
 
+        let uint_var = UInt8::<F>::constant(0x6a);
         for p in padded_var.iter_mut() {
-            *p ^= 0x6a;
+            p.xor(&uint_var).unwrap();
         }
         let mut oh = HashVar::new(cs.clone(), poseidon_params).unwrap();
-        oh.update(&padded_var[..]);
-        oh.buffer.push(ih.finalize());  // since ih.finalize() returns Fr already, push instead of oh.update
+        oh.update(&padded_var[..], cs.clone());
+        oh.buffer.push(ih.finalize().unwrap());  // since ih.finalize() returns Fr already, push instead of oh.update
         oh.finalize()
     }
 }
@@ -332,6 +335,7 @@ pub fn from_bytes_le<F: PrimeField + Absorb> (cs: ConstraintSystemRef<F>, bytes:
         coeff.double_in_place(); // Each bit represents an increasing power of 2
     }
 
+    // lc is now the number represented by bits
     // Allocate a new variable in the constraint system using the linear combination
     let variable = cs.new_lc(lc)?;
 
@@ -351,4 +355,47 @@ impl<F: PrimeField + Absorb> AllocVar<HashVar<F>, F> for HashVar<F> {
             buffer: hash.buffer,
         })
     }
+}
+
+fn from_bits<F: PrimeField>(
+    cs: ConstraintSystemRef<F>, 
+    elem_bits: Vec<Boolean<F>>
+) -> FpVar<F> {
+    // let elem_bits: Vec<Boolean<Fr>> = elem_uint.to_bits_le().unwrap();
+    // Fr::from_bigint(<Fr as PrimeField>::BigInt::from_bits_le(&elem_bits)).unwrap();
+
+    // let cs = other.cs();
+    let mut lc: LinearCombination<_> = LinearCombination::zero();
+    let mut coeff = F::one();
+
+    for bit in elem_bits.clone() {
+        match bit {
+            Boolean::Constant(b) => {
+                if b {
+                    lc += (coeff, Variable::One);
+                }
+            }
+            Boolean::Is(var) => {
+                lc += (coeff, var.variable());
+            }
+            Boolean::Not(var) => {
+                lc = lc + (coeff, Variable::One) - (coeff, var.variable());
+            }
+        }
+        coeff.square_in_place(); // Each bit represents an increasing power of 2
+    }
+
+    // lc is now the number represented by bits
+    // Allocate a new variable in the constraint system using the linear combination
+    let variable = cs.new_lc(lc).unwrap();
+    // let variable = cs.new_lc(elem_bits.lc()).unwrap();
+    let recovered_fr = FpVar::Var(AllocatedFp::new(
+        F::from_bigint(BigInteger::from_bits_le(&elem_bits.value().unwrap())),
+        variable,
+        cs,
+    ));
+
+    // let result = elem_var.is_eq(&recovered_fr).unwrap().value();
+
+    recovered_fr
 }
